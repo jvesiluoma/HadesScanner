@@ -2,8 +2,9 @@
 import os
 import re
 import sys
-import argparse
 import json
+import argparse
+import subprocess
 from flask import Flask, render_template_string, redirect, request, url_for
 from pygments import highlight
 from pygments.lexers import get_lexer_by_name, TextLexer
@@ -25,6 +26,15 @@ dangerous_patterns_by_language = {
         ("Insecure Random Generator (Use SecureRandom instead)", r"new\s+Random\(\)"),
         ("Use of Cipher in ECB mode (Weak Encryption Mode)", r"Cipher\.getInstance\(\"[A-Za-z0-9]+/ECB/"),
         ("Disabling SSL/TLS Certificate Validation (Insecure SSL Configuration)", r"setHostnameVerifier\s*\("),
+        ("XML External Entity (XXE) Injection", r"DocumentBuilderFactory\.newInstance"),
+        ("Improper Use of Regular Expressions (ReDoS)", r"Pattern\.compile"),
+        ("Reflection-based invocation (Possible Code Injection)", r"Method\.invoke"),
+        ("Trusting all certificates (Insecure SSL Configuration)", r"TrustManager\[\]"),
+        ("SQL Query execution without prepared statements (Possible SQL Injection)", r"Statement\.execute(Query|Update)"),
+        ("Logging sensitive information (Information Exposure)", r"(log|logger)\.log(Level\.(INFO|WARNING|SEVERE),\s*\"[^\"]*password"),
+        ("Deserialization using XStream (Possible Insecure Deserialization)", r"XStream\.fromXML"),
+        ("Unvalidated Redirects (Possible Open Redirect)", r"response\.sendRedirect"),
+        ("Using Object.equals() for sensitive information comparison (Possible Timing Attack)", r"\.equals\("),
     ],
     'php': [
         ("Use of eval (Possible Code Injection)", r"\beval\s*\("),
@@ -35,21 +45,53 @@ dangerous_patterns_by_language = {
         ("Use of unserialize on untrusted data (Possible Deserialization Vulnerability)", r"\bunserialize\s*\(.*\$_"),
         ("Hard-coded password (Credential Exposure)", r"\$.*(password|passwd|pwd)\s*=\s*['\"][^'\"]+['\"]"),
         ("Use of base64_decode (Possible Obfuscated Code)", r"\bbase64_decode\s*\("),
+        
+        # Additions
+        ("Use of preg_replace with /e modifier (Possible Code Injection)", r"\bpreg_replace\s*\(.*\b/e\b"),
+        ("Use of system functions for file upload (Possible File Upload Vulnerability)", r"\bmove_uploaded_file\s*\("),
+        ("Use of fopen with untrusted data (Possible Path Traversal)", r"\bfopen\s*\(.*\$_"),
+        ("Use of file_get_contents with untrusted data (Possible Remote File Inclusion)", r"\bfile_get_contents\s*\(.*\$_"),
+        ("Direct output of user input (Possible XSS)", r"\b(printf|echo)\s*\(.*\$_"),
+        ("Use of random_bytes for cryptographic purposes (Weak Random Number Generator)", r"\brandom_bytes\s*\("),
+        ("Use of exec with untrusted data (Possible Command Injection)", r"\b(exec|shell_exec)\s*\(.*\$_"),
     ],
     'asp': [
         ("Use of Eval (Possible Code Injection)", r"\bEval\s*\("),
         ("SQL Query Concatenation (Possible SQL Injection)", r"\".*\"\s*\&\s*"),
         ("Hard-coded password (Credential Exposure)", r"(password|passwd|pwd)\s*=\s*\"[^\"]+\""),
         ("Use of Execute (Possible Command Execution)", r"\bExecute\s*\("),
+        ("Use of Response.Write with untrusted input (Possible XSS)", r"Response\.Write\s*\(.*\&\s*\$_"),
+        ("Inclusion of Remote Files (File Inclusion Vulnerability)", r"\b(Server\.Execute|Server\.Transfer)\s*\(.*\$_"),
+        ("Use of Request.QueryString without validation (Possible Input Manipulation)", r"Request\.QueryString\s*\("),
+        ("Use of Session variables for sensitive data (Credential Exposure)", r"Session\(\".*(password|passwd|pwd)"),
+        ("Insecure file handling functions (Possible Path Traversal)", r"\b(FileSystemObject|FSO)\.OpenTextFile\s*\(.*\$_"),
     ],
     'csharp': [
         ("Use of Process.Start with untrusted input (Possible Command Injection)", r"Process\.Start\s*\("),
         ("SQL Query Concatenation (Possible SQL Injection)", r"\".*\"\s*\+\s*"),
         ("Hard-coded password (Credential Exposure)", r"(password|passwd|pwd)\s*=\s*\"[^\"]+\""),
+        ("Hard-coded connection string (Credential Exposure)", r"ConnectionString\s*=\s*\"[^\"]+\""),
+        ("Disabling SSL certificate validation (Insecure SSL/TLS Configuration)", r"ServicePointManager\.ServerCertificateValidationCallback\s*=\s*"),
+        ("Direct output to response without encoding (Possible XSS)", r"Response\.Write\s*\(.*\)"),
+        ("Unsanitized LDAP queries (Possible LDAP Injection)", r"DirectorySearcher\.Filter\s*=\s*.*"),
+        ("Unsanitized file paths (Possible Path Traversal)", r"File\.(ReadAllText|WriteAllText|Open|Delete|Exists)\s*\(.*\)"),
+        ("Dynamic assembly loading (Possible Code Injection)", r"Assembly\.Load\s*\("),
         ("Use of MD5CryptoServiceProvider (Weak Hash Function)", r"new\s+MD5CryptoServiceProvider\s*\("),
         ("Use of SHA1CryptoServiceProvider (Weak Hash Function)", r"new\s+SHA1CryptoServiceProvider\s*\("),
         ("Use of BinaryFormatter.Deserialize (Possible Insecure Deserialization)", r"BinaryFormatter\.Deserialize\s*\("),
         ("Use of HttpWebRequest with AllowAutoRedirect set to true (Open Redirect)", r"HttpWebRequest\s+.*AllowAutoRedirect\s*=\s*true"),
+        ("Use of concatenated SQL queries (Possible SQL Injection)", r"(CommandText|ExecuteNonQuery|ExecuteReader)\s*=\s*\".*\"\s*\+\s*"),
+        ("Use of System.Random (Insecure Random Number Generator)", r"new\s+Random\s*\("),
+        ("Use of SoapFormatter.Deserialize (Possible Insecure Deserialization)", r"SoapFormatter\.Deserialize\s*\("),
+        ("Use of DES encryption (Weak Encryption Algorithm)", r"DESCryptoServiceProvider\s*\("),
+        ("Use of RC2 encryption (Weak Encryption Algorithm)", r"RC2CryptoServiceProvider\s*\("),
+        ("Execution of commands through cmd.exe (Possible Command Injection)", r"Process\.Start\s*\(\s*\"cmd\.exe\""),
+        ("Reflection-based invocation (Possible Code Injection)", r"Invoke\s*\("),
+        ("XML External Entity (XXE) Injection", r"XmlReader\.Create\s*\("),
+        ("XML External Entity (XXE) Injection", r"XmlDocument\.Load\s*\("),
+        ("Unvalidated Redirects (Possible Open Redirect)", r"Response\.Redirect\s*\("),
+        ("Dangerous File Uploads (Possible Remote Code Execution)", r"HttpPostedFile\.SaveAs\s*\("),
+        ("Improper Use of Regular Expressions (ReDoS)", r"Regex\s*\("),
     ],
     'python': [
         ("Use of eval (Possible Code Injection)", r"\beval\s*\("),
@@ -60,6 +102,13 @@ dangerous_patterns_by_language = {
         ("Use of MD5 (Weak Hash Function)", r"hashlib\.md5\s*\("),
         ("Use of SHA1 (Weak Hash Function)", r"hashlib\.sha1\s*\("),
         ("Use of YAML load on untrusted data (Possible Deserialization Vulnerability)", r"yaml\.load\s*\("),
+        ("Use of subprocess with shell=True (Possible Command Injection)", r"subprocess\.run\s*\(.*shell\s*=\s*True"),
+        ("Use of os.system (Possible Command Injection)", r"os\.system\s*\("),
+        ("Use of input() in Python 2 (Possible Command Injection)", r"\binput\s*\("),
+        ("Use of marshal (Possible Insecure Deserialization)", r"marshal\.load\s*\("),
+        ("Direct file access with open() (Possible Path Traversal)", r"\bopen\s*\(.*\$_"),
+        ("Use of execfile (Possible Code Injection)", r"\bexecfile\s*\("),
+        ("Use of urllib without validation (Insecure URL Handling)", r"urllib\.(urlopen|request)\s*\("),
     ],
     'c_cpp': [
         ("Use of gets (Possible Buffer Overflow)", r"\bgets\s*\("),
@@ -72,6 +121,35 @@ dangerous_patterns_by_language = {
         ("Hard-coded password (Credential Exposure)", r"(password|passwd|pwd)\s*=\s*['\"]?[^'\";]+['\"]?"),
         ("Use of malloc without sizeof (Possible Memory Allocation Issue)", r"\bmalloc\s*\([^s]*\)"),
         ("Use of strncpy with potential off-by-one error", r"\bstrncpy\s*\("),
+        ("Use of realloc without proper handling (Possible Memory Leak or Crash)", r"\brealloc\s*\("),
+        ("Unchecked return value of memory allocation functions (Potential Memory Issue)", r"\b(malloc|calloc|realloc)\s*\("),
+        ("Integer overflow/underflow in arithmetic operations", r"\b[+\-*\/]\s*[^;]*\b(int|short|long|unsigned)\b"),
+        ("Format string vulnerability in printf-like functions", r"\b(printf|fprintf|snprintf|vfprintf)\s*\([^,]*\$"),
+        ("Use of free on non-heap memory (Possible Double Free or Invalid Free)", r"\bfree\s*\(.*\)"),
+        ("Use of strcmp with untrusted input (Possible Buffer Overflow)", r"\bstrcmp\s*\("),
+        ("Use of alloca (Possible Stack Overflow)", r"\balloca\s*\("),
+        ("Direct pointer arithmetic (Possible Memory Corruption)", r"\*\s*\(.*\+"),
+        ("Uninitialized variables (Possible Undefined Behavior)", r"\b(int|char|float|double)\s+[^=;]+\s*;"),
+    ],
+    'lua': [
+        ("Use of load or loadstring (Possible Code Injection)", r"\b(load|string)\s*\("),
+        ("Use of eval-like functions (Possible Code Injection)", r"\beval\s*\("),
+        ("Use of os.execute (Possible Command Injection)", r"\bos\.execute\s*\("),
+        ("Use of io.popen (Possible Command Execution)", r"\bio\.popen\s*\("),
+        ("Use of dofile (Possible File Inclusion Vulnerability)", r"\bdofile\s*\("),
+        ("Use of require with untrusted data (Possible File Inclusion)", r"\brequire\s*\(.*\$_"),
+        ("Use of insecure random number generator (Use a cryptographic RNG for sensitive data)", r"\bmath\.random\s*\("),
+        ("Pickle or unserialize on untrusted data (Possible Deserialization Vulnerability)", r"\bunserialize\s*\("),
+        ("Use of insecure file operations (Possible Path Traversal)", r"\bio\.open\s*\(.*\$_"),
+        ("Untrusted input in loadfile (Possible Remote File Inclusion)", r"\bloadfile\s*\("),
+        ("Insecure use of setfenv (Scope Manipulation Vulnerability)", r"\bsetfenv\s*\("),
+        ("Insecure use of debug library (Possible Privilege Escalation)", r"\bdebug\.(getinfo|getlocal|setlocal|setmetatable|traceback)\s*\("),
+        ("Hard-coded password (Credential Exposure)", r"(password|passwd|pwd)\s*=\s*['\"][^'\"]+['\"]"),
+        ("Insecure use of table.concat with untrusted data (Possible Injection)", r"\btable\.concat\s*\(.*\$_"),
+        ("Use of package.loadlib (Dynamic Library Loading Vulnerability)", r"\bpackage\.loadlib\s*\("),
+        ("Use of collectgarbage (Possible Denial of Service)", r"\bcollectgarbage\s*\("),
+        ("Use of untrusted data in coroutines (Possible Denial of Service or Control Hijack)", r"\bcoroutine\.create\s*\("),
+        ("Unvalidated user input in string formatting (Format String Vulnerability)", r"\bstring\.format\s*\(.*\$_"),
     ],
     'javascript': [
         ("Use of eval (Possible Code Injection)", r"\beval\s*\("),
@@ -80,32 +158,78 @@ dangerous_patterns_by_language = {
         ("Use of setTimeout or setInterval with string argument (Possible Code Injection)", r"\b(setTimeout|setInterval)\s*\(.*['\"].*['\"]"),
         ("Use of Function constructor (Possible Code Injection)", r"\bFunction\s*\("),
         ("Use of unescape (Potential Obfuscated Code)", r"\bunescape\s*\("),
+        ("Use of localStorage or sessionStorage without validation (Sensitive Data Exposure)", r"(localStorage|sessionStorage)\.setItem\s*\("),
+        ("Use of window.location without validation (Open Redirect)", r"window\.location\s*=\s*"),
+        ("Direct access to DOM nodes via document.getElementById (Potential DOM Clobbering)", r"document\.getElementById\s*\("),
+        ("Use of jQuery.html() with untrusted data (Possible XSS Vulnerability)", r"\$\.html\s*\("),
+        ("Use of dangerouslySetInnerHTML in React (Possible XSS Vulnerability)", r"dangerouslySetInnerHTML\s*="),
+        ("Use of XMLHttpRequest without CORS handling (Cross-Origin Resource Sharing Issues)", r"XMLHttpRequest\s*\("),
+        ("Use of Object.prototype without hasOwnProperty (Prototype Pollution Vulnerability)", r"Object\.prototype\.[^h]\w*"),
     ],
-    # Add other languages as needed
 }
 
 # List of interesting strings to look for (case-insensitive)
 default_interesting_strings = [
+    # Credentials and Authentication
     "pass", "password", "passwd", "pwd", "username", "user", "api", "apikey",
     "secret", "token", "key", "private", "credential", "auth", "authenticate",
-    "authorization", "encrypt", "decrypt", "ssl", "tls", "cert", "certificate",
-    "debug", "admin", "root", "hack", "bypass", "vulnerable", "exploit",
-    "malicious", "insecure", "backdoor", "leak", "expose", "sensitive",
-    "hardcoded", "plaintext", "disabled", "unvalidated", "unchecked", "unsafe",
-    "shell", "command", "execute", "exec", "injection", "eval", "printf",
-    "sprintf", "format", "deserialization", "serialize", "deserialize",
-    "logging", "logger", "trace", "dump", "ftp", "http", "https", "soap",
-    "rest", "connection", "connect", "session", "cipher", "nonce", "iv",
-    "master", "slave", "chmod", "chown", "netcat", "nmap", "wireshark",
-    "aircrack", "sniffer", "intercept", "spoof", "proxy", "hook", "overflow",
-    "corrupt", "rce", "xxe", "sqli", "csrf", "xss", "redirect", "ldap",
-    "rdp", "vnc", "telnet", "ssh", "scp", "sftp", "backtrace", "overflow",
-    "stack", "heap", "formatstring", "heapoverflow", "stackoverflow",
-    "memcpy", "free", "alloc", "chmod", "chroot", "mount", "umount",
-    "kill", "signal", "sigaction", "race", "thread", "mutex", "semaphore",
-    "deadlock", "lock", "unlock", "buffer", "underflow", "crypt", "crypto",
-    "rand", "random", "urandom", "drand", "time", "gettimeofday", "clock",
-    "password_hash", "password_verify", "bcrypt", "argon2", "scrypt",
+    "authorization", "password_hash", "password_verify", "bcrypt", "argon2", "scrypt",
+
+    # Encryption and Security
+    "encrypt", "decrypt", "ssl", "tls", "cert", "certificate", "cipher", "nonce", "iv",
+    "crypto", "crypt", "rand", "random", "urandom", "drand",
+
+    # Debugging and Logging
+    "debug", "logger", "log", "trace", "dump", "backtrace", "console.log",
+
+    # User Privileges
+    "admin", "root", "chmod", "chown", "master", "slave",
+
+    # Malicious or Suspicious Activity
+    "hack", "bypass", "vulnerable", "exploit", "malicious", "insecure", "backdoor",
+    "leak", "expose", "sensitive", "hardcoded", "plaintext",
+
+    # Input Validation
+    "unvalidated", "unchecked", "unsafe", "unsanitized",
+
+    # Command Execution
+    "shell", "command", "execute", "exec", "system", "injection", "eval", "Function(", "spawn", "child_process",
+
+    # Code Vulnerabilities
+    "format", "printf", "sprintf", "deserialization", "serialize", "deserialize",
+    "buffer", "overflow", "underflow", "rce", "xxe", "sqli", "csrf", "xss",
+    "ldap", "heapoverflow", "stackoverflow", "formatstring",
+
+    # File System and OS Operations
+    "alloc", "free", "memcpy", "fopen", "fs", "open", "close", "chmod", "chroot",
+    "mount", "umount", "file", "read", "write", "unlink", "pipe", "dir",
+
+    # Network and Protocols
+    "ftp", "http", "https", "ssh", "scp", "sftp", "netcat", "nmap", "wireshark",
+    "proxy", "hook", "telnet", "rdp", "vnc", "WebSocket", "XMLHttpRequest", "fetch", "socket", "request", "response",
+
+    # Web and Scripting Vulnerabilities
+    "onload", "onclick", "onerror", "onsubmit", "onmouseover", "iframe", "embed",
+    "form", "input", "script", "innerHTML", "outerHTML", "document.write", 
+    "base64", "data:", "javascript:", "vbscript:", "expression(",
+    "alert", "prompt", "confirm", "content-security-policy", "x-frame-options", 
+    "x-xss-protection", "x-content-type-options", "strict-transport-security", 
+    "referrer-policy", "permissions-policy", "dangerouslySetInnerHTML",
+
+    # Network Configuration and Libraries
+    "dns", "net", "tls", "http", "https", "url", "cluster", "dgram", "stream", "zlib",
+    "querystring",
+
+    # Timing and Race Conditions
+    "race", "thread", "mutex", "semaphore", "deadlock", "lock", "unlock",
+    "time", "gettimeofday", "clock", "sleep", "setTimeout", "setInterval",
+
+    # File Inclusion/Path Traversal
+    "require(", "import", "export", "module.exports", "__dirname", "__filename", 
+    "path", "resolve", "basename", "dirname", "relative",
+
+    # Environment Variables and Sensitive Data Exposure
+    "process.env", "Buffer", "JSON.parse", "JSON.stringify", "env", "dotenv", "config",
 ]
 
 # Global dictionaries to store findings grouped by type
@@ -136,6 +260,13 @@ def scan_for_interesting_strings(file_path, interesting_strings):
     """
     Scans a single file for interesting strings and stores the results.
     """
+
+
+    # Skip .strings.txt files to prevent duplicate processing
+    if "interesting_strings.txt" in file_path or "possible_vulnerabilities.txt" in file_path:
+        return
+
+
     try:
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as file:
             for line_number, line in enumerate(file, start=1):
@@ -151,7 +282,26 @@ def scan_for_interesting_strings(file_path, interesting_strings):
     except Exception as e:
         print(f"Error reading {file_path}: {e}")
 
-def scan_directory(directory, language, custom_patterns, custom_strings):
+
+def is_binary_file(filepath):
+    """
+    Determines if a file is binary.
+    """
+    try:
+        with open(filepath, 'rb') as f:
+            chunk = f.read(1024)
+            if b'\0' in chunk:
+                return True
+            else:
+                return False
+    except Exception as e:
+        print(f"Error reading file {filepath}: {e}")
+        return False
+
+
+
+
+def scan_directory(directory, language, custom_patterns, custom_strings, customsearch=False):
     """
     Scans the directory for source files and performs vulnerability scanning and interesting string scanning.
     """
@@ -159,43 +309,73 @@ def scan_directory(directory, language, custom_patterns, custom_strings):
         'java': ('.java',),
         'php': ('.php', '.php3', '.php4', '.php5', '.phtml', '.inc'),
         'asp': ('.asp', '.aspx', '.ascx'),
-        'csharp': ('.cs',),
+        'csharp': ('.cs', '.vb', '.cshtml', '.vbhtml'),
         'python': ('.py',),
         'c_cpp': ('.c', '.cpp', '.h', '.hpp', '.cc', '.cxx', '.hh', '.hxx'),
-        'javascript': ('.js', '.jsx', '.mjs'),
-        # Add other languages and their file extensions as needed
+        'javascript': ('.js', '.jsx', '.mjs', '.ts', '.tsx'),
+        'html': ('.html', '.htm', '.xhtml', '.jsp', '.asp', '.aspx'),
+        'lua': ('.lua', '.wlua'),
     }
-
-    if language not in file_extensions:
-        print(f"Unsupported language: {language}")
-        sys.exit(1)
-
-    extensions = file_extensions[language]
 
     dangerous_patterns = dangerous_patterns_by_language.get(language, [])
     dangerous_patterns.extend(custom_patterns)
 
     interesting_strings = default_interesting_strings + custom_strings
 
-    source_files = []
-    for root, _, files in os.walk(directory):
-        for filename in files:
-            if filename.endswith(extensions):
+    if customsearch:
+        print("Performing custom search on all files...")
+        for root, _, files in os.walk(directory):
+            for filename in files:
                 file_path = os.path.join(root, filename)
-                source_files.append(file_path)
+                # Skip already generated .strings.txt files
+                if filename.endswith('.strings.txt'):
+                    continue
 
-    # First, scan for vulnerabilities
-    print("Scanning for possible vulnerabilities...")
-    for file_path in source_files:
-        scan_for_vulnerabilities(file_path, dangerous_patterns)
+                # Check if the file is binary
+                if is_binary_file(file_path):
+                    # Run 'strings' command and save output
+                    output_file = f"{file_path}.strings.txt"
+                    try:
+                        with open(output_file, 'w', encoding='utf-8') as outfile:
+                            subprocess.run(['strings', file_path], stdout=outfile)
+                        print(f"Extracted strings from binary file: {file_path}")
+                        # Scan the output file for interesting strings
+                        scan_for_interesting_strings(output_file, interesting_strings)
+                    except Exception as e:
+                        print(f"Error processing binary file {file_path}: {e}")
+                else:
+                    # For text files, scan directly
+                    scan_for_interesting_strings(file_path, interesting_strings)
+        # After processing, save the results
+        save_results()
+    else:
+        # Existing code for scanning source files
+        # Determine file extensions based on language
+        extensions = file_extensions.get(language, ())
+        if not extensions:
+            print(f"Unsupported language: {language}")
+            sys.exit(1)
 
-    # Then, scan for interesting strings
-    print("\nScanning for interesting strings...")
-    for file_path in source_files:
-        scan_for_interesting_strings(file_path, interesting_strings)
+        source_files = []
+        for root, _, files in os.walk(directory):
+            for filename in files:
+                if filename.endswith(extensions):
+                    file_path = os.path.join(root, filename)
+                    source_files.append(file_path)
 
-    # Save the results to files
-    save_results()
+        # First, scan for vulnerabilities
+        print("Scanning for possible vulnerabilities...")
+        for file_path in source_files:
+            scan_for_vulnerabilities(file_path, dangerous_patterns)
+
+        # Then, scan for interesting strings
+        print("\nScanning for interesting strings...")
+        for file_path in source_files:
+            scan_for_interesting_strings(file_path, interesting_strings)
+
+        # Save the results to files
+        save_results()
+
 
 def save_results():
     """
@@ -329,7 +509,7 @@ def create_app(scan_directory):
         </head>
         <body>
             <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
-              <a class="navbar-brand" href="#">Code Vulnerability Scanner</a>
+              <a class="navbar-brand" href="#">HadesCodeScanner</a>
               <div class="navbar-nav">
                 <a class="nav-item nav-link active" href="{{ url_for('vulnerabilities_view') }}">Vulnerabilities</a>
                 <a class="nav-item nav-link" href="{{ url_for('interesting_strings_view') }}">Interesting Strings</a>
@@ -406,7 +586,7 @@ def create_app(scan_directory):
         </head>
         <body>
             <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
-              <a class="navbar-brand" href="#">Code Vulnerability Scanner</a>
+              <a class="navbar-brand" href="#">HadesCodeScanner</a>
               <div class="navbar-nav">
                 <a class="nav-item nav-link" href="{{ url_for('vulnerabilities_view') }}">Vulnerabilities</a>
                 <a class="nav-item nav-link active" href="{{ url_for('interesting_strings_view') }}">Interesting Strings</a>
@@ -498,7 +678,7 @@ def create_app(scan_directory):
         </head>
         <body>
             <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
-              <a class="navbar-brand" href="#">Code Vulnerability Scanner</a>
+              <a class="navbar-brand" href="#">HadesCodeScanner</a>
               <div class="navbar-nav">
                 <a class="nav-item nav-link" href="{{ url_for('vulnerabilities_view') }}">Vulnerabilities</a>
                 <a class="nav-item nav-link" href="{{ url_for('interesting_strings_view') }}">Interesting Strings</a>
@@ -639,13 +819,17 @@ def create_app(scan_directory):
 
     return app
 
+
+
 def main():
+    print("HadesCodeScan v1.0\n")
     parser = argparse.ArgumentParser(description='Scan source code for potential vulnerabilities.')
     parser.add_argument('directory', nargs='?', default=None, help='Directory containing source code.')
     parser.add_argument('--language', help='Programming language (e.g., java, php, asp, csharp, python, c_cpp, javascript).')
     parser.add_argument('--custom-patterns', nargs='*', default=[], help='Custom patterns for vulnerabilities in the format "Description::Regex".')
     parser.add_argument('--custom-strings', nargs='*', default=[], help='Custom interesting strings to search for.')
     parser.add_argument('--semgrepreport', help='Path to Semgrep JSON report file.')
+    parser.add_argument('--customsearch', action='store_true', help='Perform a custom search on all files, including binaries, and extract strings from them.')
     parser.add_argument('--semgreponly', action='store_true', help='Only display Semgrep report.')
     args = parser.parse_args()
 
@@ -661,29 +845,13 @@ def main():
             app.run(debug=False)
             return
 
-    if args.directory and args.language:
-        language = args.language.lower()
-        app_language = language
-        if language == 'csharp':
-            app_language = 'csharp'
-        elif language == 'asp':
-            app_language = 'asp'
-        elif language == 'python':
-            app_language = 'python'
-        elif language == 'java':
-            app_language = 'java'
-        elif language == 'php':
-            app_language = 'php'
-        elif language in ['c', 'cpp', 'c_cpp']:
-            language = 'c_cpp'
-            app_language = 'cpp'  # For syntax highlighting
-        elif language in ['javascript', 'js']:
-            language = 'javascript'
-            app_language = 'javascript'
-        else:
-            print(f"Unsupported language: {language}")
+    if args.customsearch:
+        if not args.directory:
+            print("Error: '--customsearch' requires a directory.")
+            parser.print_help()
             sys.exit(1)
-
+        language = None
+        app_language = 'text'
         app.config['LANGUAGE'] = app_language
 
         # Process custom patterns
@@ -702,23 +870,83 @@ def main():
         if not os.path.isdir(args.directory):
             print(f"The directory {args.directory} does not exist.")
             sys.exit(1)
-
+        print("4")
         if not args.semgreponly:
             print(f"Scanning directory: {args.directory}")
-            scan_directory(args.directory, language, custom_patterns, custom_strings)
+            scan_directory(
+                args.directory,
+                language,
+                custom_patterns,
+                custom_strings,
+                customsearch=args.customsearch
+            )
             print("\nScan completed.")
             print("Results saved to 'possible_vulnerabilities.txt' and 'interesting_strings.txt'.")
-
-    else:
-        if not args.semgrepreport:
-            parser.print_help()
-            sys.exit(1)
+    elif args.directory and args.language:
+        language = args.language.lower()
+        app_language = language
+        print("2aaa")
+        if language == 'csharp':
+            app_language = 'csharp'
+        elif language == 'asp':
+            app_language = 'asp'
+        elif language == 'python':
+            app_language = 'python'
+        elif language == 'java':
+            app_language = 'java'
+        elif language == 'php':
+            app_language = 'php'
+        elif language in ['c', 'cpp', 'c_cpp']:
+            language = 'c_cpp'
+            app_language = 'cpp'
+        elif language in ['javascript', 'js']:
+            language = 'javascript'
+            app_language = 'javascript'
+        elif language == 'lua':
+            language = 'lua'
+            app_language = 'lua'
         else:
-            app.config['LANGUAGE'] = 'text'  # Default language
+            print(f"Unsupported language: {language}")
+            sys.exit(1)
+        app.config['LANGUAGE'] = app_language
 
+        # Process custom patterns
+        custom_patterns = []
+        for pattern in args.custom_patterns:
+            if '::' in pattern:
+                description, regex = pattern.split('::', 1)
+                custom_patterns.append((description, regex))
+            else:
+                print(f"Invalid custom pattern format: {pattern}. Expected 'Description::Regex'.")
+                sys.exit(1)
+
+        # Custom interesting strings
+        custom_strings = args.custom_strings
+
+        if not os.path.isdir(args.directory):
+            print(f"The directory {args.directory} does not exist.")
+            sys.exit(1)
+        print("4")
+        if not args.semgreponly:
+            print(f"Scanning directory: {args.directory}")
+            scan_directory(
+                args.directory,
+                language,
+                custom_patterns,
+                custom_strings,
+                customsearch=args.customsearch
+            )
+            print("\nScan completed.")
+            print("Results saved to 'possible_vulnerabilities.txt' and 'interesting_strings.txt'.")
+    else:
+        parser.print_help()
+        sys.exit(1)
+
+    print("5")
     # Start the Flask web server
     print("Starting the web server...")
     app.run(debug=False)
+
 
 if __name__ == '__main__':
     main()
