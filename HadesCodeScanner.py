@@ -3,10 +3,14 @@ import os
 import re
 import sys
 import argparse
-from flask import Flask, render_template_string, send_from_directory, url_for, redirect, request
+import json
+from flask import Flask, render_template_string, redirect, request, url_for
 from pygments import highlight
 from pygments.lexers import get_lexer_by_name, TextLexer
 from pygments.formatters import HtmlFormatter
+
+# Get the current working directory
+current_directory = os.getcwd()
 
 # Mapping of programming languages to dangerous patterns
 dangerous_patterns_by_language = {
@@ -24,16 +28,17 @@ dangerous_patterns_by_language = {
     ],
     'php': [
         ("Use of eval (Possible Code Injection)", r"\beval\s*\("),
-        ("SQL Query Concatenation (Possible SQL Injection)", r"\bmysqli_query\s*\(.*\.\$"),
-        ("Inclusion of Remote Files (Possible File Inclusion Vulnerability)", r"\binclude\s*\(.*\$_"),
-        ("Use of exec (Possible Command Execution)", r"\b(exec|system|passthru|shell_exec)\s*\("),
+        ("SQL Query Concatenation (Possible SQL Injection)", r"\b(mysqli_query|mysql_query)\s*\(.*\.\$"),
+        ("Inclusion of Remote Files (Possible File Inclusion Vulnerability)", r"\b(include|require)(_once)?\s*\(.*\$_"),
+        ("Use of exec (Possible Command Execution)", r"\b(exec|system|passthru|shell_exec|popen|proc_open)\s*\("),
         ("Use of md5 without salt (Weak Hash Function)", r"\bmd5\s*\("),
         ("Use of unserialize on untrusted data (Possible Deserialization Vulnerability)", r"\bunserialize\s*\(.*\$_"),
         ("Hard-coded password (Credential Exposure)", r"\$.*(password|passwd|pwd)\s*=\s*['\"][^'\"]+['\"]"),
+        ("Use of base64_decode (Possible Obfuscated Code)", r"\bbase64_decode\s*\("),
     ],
     'asp': [
         ("Use of Eval (Possible Code Injection)", r"\bEval\s*\("),
-        ("SQL Query Concatenation (Possible SQL Injection)", r"\".*\"\s*\+\s*"),
+        ("SQL Query Concatenation (Possible SQL Injection)", r"\".*\"\s*\&\s*"),
         ("Hard-coded password (Credential Exposure)", r"(password|passwd|pwd)\s*=\s*\"[^\"]+\""),
         ("Use of Execute (Possible Command Execution)", r"\bExecute\s*\("),
     ],
@@ -43,6 +48,8 @@ dangerous_patterns_by_language = {
         ("Hard-coded password (Credential Exposure)", r"(password|passwd|pwd)\s*=\s*\"[^\"]+\""),
         ("Use of MD5CryptoServiceProvider (Weak Hash Function)", r"new\s+MD5CryptoServiceProvider\s*\("),
         ("Use of SHA1CryptoServiceProvider (Weak Hash Function)", r"new\s+SHA1CryptoServiceProvider\s*\("),
+        ("Use of BinaryFormatter.Deserialize (Possible Insecure Deserialization)", r"BinaryFormatter\.Deserialize\s*\("),
+        ("Use of HttpWebRequest with AllowAutoRedirect set to true (Open Redirect)", r"HttpWebRequest\s+.*AllowAutoRedirect\s*=\s*true"),
     ],
     'python': [
         ("Use of eval (Possible Code Injection)", r"\beval\s*\("),
@@ -52,6 +59,7 @@ dangerous_patterns_by_language = {
         ("Hard-coded password (Credential Exposure)", r"(password|passwd|pwd)\s*=\s*[\'\"][^\'\"]+[\'\"]"),
         ("Use of MD5 (Weak Hash Function)", r"hashlib\.md5\s*\("),
         ("Use of SHA1 (Weak Hash Function)", r"hashlib\.sha1\s*\("),
+        ("Use of YAML load on untrusted data (Possible Deserialization Vulnerability)", r"yaml\.load\s*\("),
     ],
     'c_cpp': [
         ("Use of gets (Possible Buffer Overflow)", r"\bgets\s*\("),
@@ -61,7 +69,17 @@ dangerous_patterns_by_language = {
         ("Use of strcat without bounds checking (Possible Buffer Overflow)", r"\bstrcat\s*\("),
         ("Use of fscanf without bounds checking (Possible Buffer Overflow)", r"\bfscanf\s*\("),
         ("Use of sscanf without bounds checking (Possible Buffer Overflow)", r"\bsscanf\s*\("),
-        ("Hard-coded password (Credential Exposure)", r"(password|passwd|pwd)\s*=\s*['\"][^'\"]+['\"]"),
+        ("Hard-coded password (Credential Exposure)", r"(password|passwd|pwd)\s*=\s*['\"]?[^'\";]+['\"]?"),
+        ("Use of malloc without sizeof (Possible Memory Allocation Issue)", r"\bmalloc\s*\([^s]*\)"),
+        ("Use of strncpy with potential off-by-one error", r"\bstrncpy\s*\("),
+    ],
+    'javascript': [
+        ("Use of eval (Possible Code Injection)", r"\beval\s*\("),
+        ("Use of innerHTML (Possible XSS Vulnerability)", r"\.innerHTML\s*="),
+        ("Use of document.write (Possible XSS Vulnerability)", r"document\.write\s*\("),
+        ("Use of setTimeout or setInterval with string argument (Possible Code Injection)", r"\b(setTimeout|setInterval)\s*\(.*['\"].*['\"]"),
+        ("Use of Function constructor (Possible Code Injection)", r"\bFunction\s*\("),
+        ("Use of unescape (Potential Obfuscated Code)", r"\bunescape\s*\("),
     ],
     # Add other languages as needed
 }
@@ -83,11 +101,17 @@ default_interesting_strings = [
     "corrupt", "rce", "xxe", "sqli", "csrf", "xss", "redirect", "ldap",
     "rdp", "vnc", "telnet", "ssh", "scp", "sftp", "backtrace", "overflow",
     "stack", "heap", "formatstring", "heapoverflow", "stackoverflow",
+    "memcpy", "free", "alloc", "chmod", "chroot", "mount", "umount",
+    "kill", "signal", "sigaction", "race", "thread", "mutex", "semaphore",
+    "deadlock", "lock", "unlock", "buffer", "underflow", "crypt", "crypto",
+    "rand", "random", "urandom", "drand", "time", "gettimeofday", "clock",
+    "password_hash", "password_verify", "bcrypt", "argon2", "scrypt",
 ]
 
 # Global dictionaries to store findings grouped by type
 vulnerabilities = {}
 interesting_findings = {}
+semgrep_findings = {}
 
 def scan_for_vulnerabilities(file_path, dangerous_patterns):
     """
@@ -132,12 +156,13 @@ def scan_directory(directory, language, custom_patterns, custom_strings):
     Scans the directory for source files and performs vulnerability scanning and interesting string scanning.
     """
     file_extensions = {
-        'java': '.java',
-        'php': '.php',
-        'asp': '.asp',
-        'csharp': '.cs',
-        'python': '.py',
-        'c_cpp': ('.c', '.cpp', '.h', '.hpp'),
+        'java': ('.java',),
+        'php': ('.php', '.php3', '.php4', '.php5', '.phtml', '.inc'),
+        'asp': ('.asp', '.aspx', '.ascx'),
+        'csharp': ('.cs',),
+        'python': ('.py',),
+        'c_cpp': ('.c', '.cpp', '.h', '.hpp', '.cc', '.cxx', '.hh', '.hxx'),
+        'javascript': ('.js', '.jsx', '.mjs'),
         # Add other languages and their file extensions as needed
     }
 
@@ -146,8 +171,6 @@ def scan_directory(directory, language, custom_patterns, custom_strings):
         sys.exit(1)
 
     extensions = file_extensions[language]
-    if isinstance(extensions, str):
-        extensions = (extensions,)
 
     dangerous_patterns = dangerous_patterns_by_language.get(language, [])
     dangerous_patterns.extend(custom_patterns)
@@ -192,12 +215,97 @@ def save_results():
                 message = f"[i] Found in {finding['file_path']}, line {finding['line_number']}\n"
                 strings_file.write(message)
 
+def parse_semgrep_report(semgrep_report_path):
+    """
+    Parses the Semgrep JSON report and stores the findings.
+    """
+    global semgrep_findings
+    try:
+        with open(semgrep_report_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+        # Handle errors
+        errors = data.get('errors', [])
+        for error in errors:
+            message = error.get('message', 'No message provided')
+            path = error.get('path', 'Unknown path')
+            spans = error.get('spans', [])
+            for span in spans:
+                file_path = span.get('file', path)
+                # Prepend current directory to file path
+                file_path = os.path.abspath(os.path.join(current_directory, file_path))
+                line_number = span.get('start', {}).get('line', 0)
+                finding = {
+                    'file_path': file_path,
+                    'line_number': line_number,
+                    'line_content': message,
+                    'message': message,
+                    'severity': 'Error',
+                    'cwe': None,
+                    'owasp': None,
+                    'owasp_link': None,
+                    'impact': None,
+                }
+                semgrep_findings.setdefault('Semgrep Error', []).append(finding)
+
+        # Handle results
+        results = data.get('results', [])
+        for result in results:
+            check_id = result.get('check_id', 'Semgrep Finding')
+            extra = result.get('extra', {})
+            message = extra.get('message', 'No message provided')
+            path = result.get('path')
+            # Prepend current directory to file path
+            path = os.path.abspath(os.path.join(current_directory, path))
+            line_number = result.get('start', {}).get('line', 0)
+            line_content = extra.get('lines', '').strip()
+            severity = extra.get('severity', 'INFO').upper()
+            metadata = extra.get('metadata', {})
+            cwe_list = metadata.get('cwe', [])
+            owasp_list = metadata.get('owasp', [])
+            impact = metadata.get('impact', None)
+            references = metadata.get('references', [])
+
+            # Extract CWE numbers from cwe_list
+            cwe_numbers = []
+            for cwe_item in cwe_list:
+                match = re.search(r'CWE-(\d+)', cwe_item)
+                if match:
+                    cwe_numbers.append(match.group(1))
+
+            # Extract OWASP info
+            owasp_items = owasp_list
+
+            # Extract OWASP link from references if available
+            owasp_link = None
+            for ref in references:
+                if 'owasp.org' in ref:
+                    owasp_link = ref
+                    break
+
+            finding = {
+                'file_path': path,
+                'line_number': line_number,
+                'line_content': line_content,
+                'message': message,
+                'severity': severity,
+                'cwe': cwe_numbers,
+                'owasp': owasp_items,
+                'owasp_link': owasp_link,
+                'impact': impact,
+            }
+            semgrep_findings.setdefault(check_id, []).append(finding)
+
+    except Exception as e:
+        print(f"Error parsing Semgrep report: {e}")
+        sys.exit(1)
+
 def create_app(scan_directory):
     """
     Creates and configures the Flask application.
     """
     app = Flask(__name__)
-    app.config['SCAN_DIRECTORY'] = scan_directory
+    app.config['SCAN_DIRECTORY'] = os.path.abspath(scan_directory)
 
     @app.route('/')
     def index():
@@ -225,6 +333,7 @@ def create_app(scan_directory):
               <div class="navbar-nav">
                 <a class="nav-item nav-link active" href="{{ url_for('vulnerabilities_view') }}">Vulnerabilities</a>
                 <a class="nav-item nav-link" href="{{ url_for('interesting_strings_view') }}">Interesting Strings</a>
+                <a class="nav-item nav-link" href="{{ url_for('semgrep_view') }}">Semgrep Findings</a>
               </div>
             </nav>
             <div class="container">
@@ -243,8 +352,13 @@ def create_app(scan_directory):
                                 </thead>
                                 <tbody>
                                     {% for finding in findings %}
+                                    {% set clean_file_path = finding.file_path.replace('/src', '', 1) %}
                                     <tr>
-                                        <td><a href="{{ url_for('view_file', file_path=finding.file_path, line_number=finding.line_number, language=language) }}" target="_blank">{{ finding.file_path }}</a></td>
+                                        <td>
+                                            <a href="{{ url_for('view_file', file_path=clean_file_path, line_number=finding.line_number, language=language) }}" target="_blank">
+                                                {{ clean_file_path }}
+                                            </a>
+                                        </td>
                                         <td>{{ finding.line_number }}</td>
                                         <td><code>{{ finding.line_content|e }}</code></td>
                                     </tr>
@@ -256,6 +370,7 @@ def create_app(scan_directory):
                 {% endfor %}
                 <div class="footer">
                     <a href="{{ url_for('interesting_strings_view') }}" class="btn btn-primary">Go to Interesting Strings</a>
+                    <a href="{{ url_for('semgrep_view') }}" class="btn btn-secondary">Go to Semgrep Findings</a>
                 </div>
             </div>
             <script>
@@ -295,6 +410,7 @@ def create_app(scan_directory):
               <div class="navbar-nav">
                 <a class="nav-item nav-link" href="{{ url_for('vulnerabilities_view') }}">Vulnerabilities</a>
                 <a class="nav-item nav-link active" href="{{ url_for('interesting_strings_view') }}">Interesting Strings</a>
+                <a class="nav-item nav-link" href="{{ url_for('semgrep_view') }}">Semgrep Findings</a>
               </div>
             </nav>
             <div class="container">
@@ -313,8 +429,13 @@ def create_app(scan_directory):
                                 </thead>
                                 <tbody>
                                     {% for finding in findings %}
+                                    {% set clean_file_path = finding.file_path.replace('/src', '', 1) %}
                                     <tr>
-                                        <td><a href="{{ url_for('view_file', file_path=finding.file_path, line_number=finding.line_number, language=language) }}" target="_blank">{{ finding.file_path }}</a></td>
+                                        <td>
+                                            <a href="{{ url_for('view_file', file_path=clean_file_path, line_number=finding.line_number, language=language) }}" target="_blank">
+                                                {{ clean_file_path }}
+                                            </a>
+                                        </td>
                                         <td>{{ finding.line_number }}</td>
                                         <td><code>{{ finding.line_content|e }}</code></td>
                                     </tr>
@@ -326,6 +447,7 @@ def create_app(scan_directory):
                 {% endfor %}
                 <div class="footer">
                     <a href="{{ url_for('vulnerabilities_view') }}" class="btn btn-primary">Go to Vulnerabilities</a>
+                    <a href="{{ url_for('semgrep_view') }}" class="btn btn-secondary">Go to Semgrep Findings</a>
                 </div>
             </div>
             <script>
@@ -343,6 +465,117 @@ def create_app(scan_directory):
         '''
         return render_template_string(interesting_html, interesting_findings=interesting_findings, language=app.config['LANGUAGE'])
 
+    @app.route('/semgrep')
+    def semgrep_view():
+        # Color mapping based on severity
+        severity_colors = {
+            'CRITICAL': 'danger',
+            'HIGH': 'danger',
+            'MEDIUM': 'warning',
+            'LOW': 'info',
+            'INFO': 'secondary',
+            'ERROR': 'danger',
+            'WARNING': 'warning',
+        }
+
+        # Get the current working directory
+        current_directory = os.getcwd()
+
+        semgrep_html = '''
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Semgrep Findings</title>
+            <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0/css/bootstrap.min.css">
+            <style>
+                body { padding-top: 70px; }
+                .navbar { position: fixed; top: 0; width: 100%; }
+                .table-container { margin-top: 20px; }
+                .footer { margin-top: 20px; }
+                .badge { font-size: 100%; }
+                .card-header a { color: #fff; text-decoration: underline; }
+            </style>
+        </head>
+        <body>
+            <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+              <a class="navbar-brand" href="#">Code Vulnerability Scanner</a>
+              <div class="navbar-nav">
+                <a class="nav-item nav-link" href="{{ url_for('vulnerabilities_view') }}">Vulnerabilities</a>
+                <a class="nav-item nav-link" href="{{ url_for('interesting_strings_view') }}">Interesting Strings</a>
+                <a class="nav-item nav-link active" href="{{ url_for('semgrep_view') }}">Semgrep Findings</a>
+              </div>
+            </nav>
+            <div class="container">
+                <h1 class="mt-4">Semgrep Findings</h1>
+                {% for check_id, findings in semgrep_findings.items() %}
+                    <div class="table-container">
+                        <h2 onclick="toggleVisibility('semgrep-{{ loop.index }}')" style="cursor: pointer;">
+                            {{ check_id }} ({{ findings|length }})
+                            <span class="badge badge-{{ severity_colors.get(findings[0].severity, 'secondary') }}">{{ findings[0].severity }}</span>
+                        </h2>
+                        <div id="semgrep-{{ loop.index }}" style="display: none;">
+                            {% for finding in findings %}
+                            {% set clean_file_path = finding.file_path.replace('/src', '', 1) %}
+                            <div class="card mb-3">
+                                <div class="card-header text-white bg-{{ severity_colors.get(finding.severity, 'secondary') }}">
+                                    {{ finding.message }}
+                                </div>
+                                <div class="card-body">
+                                    <p>
+                                        <strong>Severity:</strong> {{ finding.severity }}<br>
+                                        {% if finding.cwe %}
+                                            <strong>CWE:</strong>
+                                            {% for cwe_id in finding.cwe %}
+                                                <a href="https://cwe.mitre.org/cgi-bin/jumpmenu.cgi?id={{ cwe_id }}">CWE-{{ cwe_id }}</a>{% if not loop.last %}, {% endif %}
+                                            {% endfor %}
+                                            <br>
+                                        {% endif %}
+                                        {% if finding.owasp %}
+                                            <strong>OWASP:</strong>
+                                            {% for owasp_item in finding.owasp %}
+                                                {{ owasp_item }}{% if not loop.last %}, {% endif %}
+                                            {% endfor %}
+                                            {% if finding.owasp_link %}
+                                                (<a href="{{ finding.owasp_link }}" target="_blank">Reference</a>)
+                                            {% endif %}
+                                            <br>
+                                        {% endif %}
+                                        {% if finding.impact %}
+                                            <strong>Impact:</strong> {{ finding.impact }}<br>
+                                        {% endif %}
+                                        <strong>File:</strong> 
+                                        <a href="{{ url_for('view_file', file_path=current_directory + clean_file_path, line_number=finding.line_number, language=language) }}" target="_blank">
+                                            {{ current_directory + clean_file_path }}
+                                        </a><br>
+                                        <strong>Line:</strong> {{ finding.line_number }}
+                                    </p>
+                                    <pre><code>{{ finding.line_content|e }}</code></pre>
+                                </div>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                {% endfor %}
+                <div class="footer">
+                    <a href="{{ url_for('vulnerabilities_view') }}" class="btn btn-primary">Go to Vulnerabilities</a>
+                    <a href="{{ url_for('interesting_strings_view') }}" class="btn btn-secondary">Go to Interesting Strings</a>
+                </div>
+            </div>
+            <script>
+                function toggleVisibility(id) {
+                    var elem = document.getElementById(id);
+                    if (elem.style.display === 'none') {
+                        elem.style.display = 'block';
+                    } else {
+                        elem.style.display = 'none';
+                    }
+                }
+            </script>
+        </body>
+        </html>
+        '''
+        return render_template_string(semgrep_html, semgrep_findings=semgrep_findings, language=app.config['LANGUAGE'], severity_colors=severity_colors, current_directory=current_directory)
+
     @app.route('/view_file')
     def view_file():
         file_path = request.args.get('file_path')
@@ -350,8 +583,9 @@ def create_app(scan_directory):
         language = request.args.get('language')
         base_dir = os.path.abspath(app.config['SCAN_DIRECTORY'])
 
-        # Security check: Ensure the file is within the scan directory
-        abs_file_path = os.path.abspath(file_path)
+        # Resolve the absolute path
+        abs_file_path = os.path.abspath(os.path.join(current_directory, file_path))
+
         if not abs_file_path.startswith(base_dir):
             return "Access denied.", 403
 
@@ -372,11 +606,23 @@ def create_app(scan_directory):
                 hl_lines=[line_number],
                 lineanchors='line',
                 anchorlinenos=True,
-                style='monokai'
+                style='default',  # Changed style for better readability
+                linenospecial=0,
+                cssclass='codehilite',
             )
             highlighted_code = highlight(code, lexer, formatter)
 
-            return highlighted_code + f'''
+            # Modify CSS to change line number color and background
+            custom_style = '''
+            <style>
+                pre.codehilite { background-color: #f8f8f8; }
+                .codehilite .linenos { color: #888; background-color: #f0f0f0; }
+                .codehilite .linenodiv { color: #888; background-color: #f0f0f0; }
+                .codehilite .hll { background-color: #ffffcc; }
+            </style>
+            '''
+
+            return custom_style + highlighted_code + f'''
             <script>
                 window.onload = function() {{
                     var element = document.getElementById('line-{line_number}');
@@ -395,55 +641,80 @@ def create_app(scan_directory):
 
 def main():
     parser = argparse.ArgumentParser(description='Scan source code for potential vulnerabilities.')
-    parser.add_argument('directory', help='Directory containing source code.')
-    parser.add_argument('--language', required=True, help='Programming language (e.g., java, php, asp, csharp, python, c_cpp).')
+    parser.add_argument('directory', nargs='?', default=None, help='Directory containing source code.')
+    parser.add_argument('--language', help='Programming language (e.g., java, php, asp, csharp, python, c_cpp, javascript).')
     parser.add_argument('--custom-patterns', nargs='*', default=[], help='Custom patterns for vulnerabilities in the format "Description::Regex".')
     parser.add_argument('--custom-strings', nargs='*', default=[], help='Custom interesting strings to search for.')
+    parser.add_argument('--semgrepreport', help='Path to Semgrep JSON report file.')
+    parser.add_argument('--semgreponly', action='store_true', help='Only display Semgrep report.')
     args = parser.parse_args()
 
-    language = args.language.lower()
-    app_language = language
-    if language == 'csharp':
-        app_language = 'csharp'
-    elif language == 'asp':
-        app_language = 'asp'
-    elif language == 'python':
-        app_language = 'python'
-    elif language == 'java':
-        app_language = 'java'
-    elif language == 'php':
-        app_language = 'php'
-    elif language in ['c', 'cpp', 'c_cpp']:
-        language = 'c_cpp'
-        app_language = 'cpp'  # For syntax highlighting
-    else:
-        print(f"Unsupported language: {language}")
-        sys.exit(1)
+    app = create_app(args.directory if args.directory else '.')
 
-    app = create_app(args.directory)
-    app.config['LANGUAGE'] = app_language
+    if args.semgrepreport:
+        print(f"Parsing Semgrep report: {args.semgrepreport}")
+        parse_semgrep_report(args.semgrepreport)
+        if args.semgreponly:
+            # Start the Flask web server
+            app.config['LANGUAGE'] = args.language if args.language else 'text'
+            print("Starting the web server...")
+            app.run(debug=False)
+            return
 
-    # Process custom patterns
-    custom_patterns = []
-    for pattern in args.custom_patterns:
-        if '::' in pattern:
-            description, regex = pattern.split('::', 1)
-            custom_patterns.append((description, regex))
+    if args.directory and args.language:
+        language = args.language.lower()
+        app_language = language
+        if language == 'csharp':
+            app_language = 'csharp'
+        elif language == 'asp':
+            app_language = 'asp'
+        elif language == 'python':
+            app_language = 'python'
+        elif language == 'java':
+            app_language = 'java'
+        elif language == 'php':
+            app_language = 'php'
+        elif language in ['c', 'cpp', 'c_cpp']:
+            language = 'c_cpp'
+            app_language = 'cpp'  # For syntax highlighting
+        elif language in ['javascript', 'js']:
+            language = 'javascript'
+            app_language = 'javascript'
         else:
-            print(f"Invalid custom pattern format: {pattern}. Expected 'Description::Regex'.")
+            print(f"Unsupported language: {language}")
             sys.exit(1)
 
-    # Custom interesting strings
-    custom_strings = args.custom_strings
+        app.config['LANGUAGE'] = app_language
 
-    if not os.path.isdir(args.directory):
-        print(f"The directory {args.directory} does not exist.")
-        sys.exit(1)
+        # Process custom patterns
+        custom_patterns = []
+        for pattern in args.custom_patterns:
+            if '::' in pattern:
+                description, regex = pattern.split('::', 1)
+                custom_patterns.append((description, regex))
+            else:
+                print(f"Invalid custom pattern format: {pattern}. Expected 'Description::Regex'.")
+                sys.exit(1)
 
-    print(f"Scanning directory: {args.directory}")
-    scan_directory(args.directory, language, custom_patterns, custom_strings)
-    print("\nScan completed.")
-    print("Results saved to 'possible_vulnerabilities.txt' and 'interesting_strings.txt'.")
+        # Custom interesting strings
+        custom_strings = args.custom_strings
+
+        if not os.path.isdir(args.directory):
+            print(f"The directory {args.directory} does not exist.")
+            sys.exit(1)
+
+        if not args.semgreponly:
+            print(f"Scanning directory: {args.directory}")
+            scan_directory(args.directory, language, custom_patterns, custom_strings)
+            print("\nScan completed.")
+            print("Results saved to 'possible_vulnerabilities.txt' and 'interesting_strings.txt'.")
+
+    else:
+        if not args.semgrepreport:
+            parser.print_help()
+            sys.exit(1)
+        else:
+            app.config['LANGUAGE'] = 'text'  # Default language
 
     # Start the Flask web server
     print("Starting the web server...")
