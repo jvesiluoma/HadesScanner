@@ -174,39 +174,64 @@ default_interesting_strings = [
     "pass", "password", "passwd", "pwd", "username", "user", "api", "apikey",
     "secret", "token", "key", "private", "credential", "auth", "authenticate",
     "authorization", "password_hash", "password_verify", "bcrypt", "argon2", "scrypt",
+    "ACCESS_KEY", "access_token", "apiKey", "API key", "API_KEY",
+    "auth_token", "client_secret", "db_password", "secret_key", "oauth",
+    "JWT", "session", "session_start", "setcookie", "Set-Cookie", "csrf_token",
+    "@csrf", "@login_required",
 
     # Encryption and Security
     "encrypt", "decrypt", "ssl", "tls", "cert", "certificate", "cipher", "nonce", "iv",
     "crypto", "crypt", "rand", "random", "urandom", "drand",
+    "AES", "DES", "RC4", "pbkdf2", "RSA", "TripleDES",
+    "hash", "Hash::make", "pbkdf2", "sha1", "SHA1", "sha256", "SHA256",
 
     # Debugging and Logging
     "debug", "logger", "log", "trace", "dump", "backtrace", "console.log",
+    "error_log", "log4j", "logging", "syslog", "fwrite", "print", "print_r",
+    "printStackTrace", "System.out.println", "console.log",
 
     # User Privileges
     "admin", "root", "chmod", "chown", "master", "slave",
+    "superuser", "sudo", "setuid", "setgid", "isAdmin", "isAuthorized",
+    "hasPermission",
 
     # Malicious or Suspicious Activity
     "hack", "bypass", "vulnerable", "exploit", "malicious", "insecure", "backdoor",
     "leak", "expose", "sensitive", "hardcoded", "plaintext",
+    "buffer overflow", "race condition", "directory traversal", "off-by-one",
+    "use after free", "HACK", "BUG", "FIXME", "TODO", "NOTE",
 
     # Input Validation
     "unvalidated", "unchecked", "unsafe", "unsanitized",
+    "filter", "filter_input", "filter_var",
+    "decodeURIComponent", "encodeURIComponent", "sanitize",
 
     # Command Execution
-    "shell", "command", "execute", "exec", "system", "injection", "eval", "Function(", "spawn", "child_process",
+    "shell", "command", "execute", "exec", "system", "injection", "eval", "Function(",
+    "spawn", "child_process", "child_process.exec", "child_process.spawn",
+    "shell_exec", "execfile", "execvp", "Runtime.getRuntime().exec",
+    "Process.Start", "ProcessBuilder", "subprocess.call", "subprocess.Popen",
+    "Method.invoke", "LoadLibrary",
 
     # Code Vulnerabilities
     "format", "printf", "sprintf", "deserialization", "serialize", "deserialize",
     "buffer", "overflow", "underflow", "rce", "xxe", "sqli", "csrf", "xss",
     "ldap", "heapoverflow", "stackoverflow", "formatstring",
+    "integer overflow", "srand", "preg_match", "preg_replace",
 
     # File System and OS Operations
     "alloc", "free", "memcpy", "fopen", "fs", "open", "close", "chmod", "chroot",
     "mount", "umount", "file", "read", "write", "unlink", "pipe", "dir",
+    "C:\\Windows\\System32", "C:\\Windows\\win.ini", "fclose", "fopen",
+    "fread", "fwrite", "fs.readFile", "fs.writeFile", "fs.open",
+    "move_uploaded_file", "uploadFile", "delete", "DELETE", "remove",
 
     # Network and Protocols
     "ftp", "http", "https", "ssh", "scp", "sftp", "netcat", "nmap", "wireshark",
-    "proxy", "hook", "telnet", "rdp", "vnc", "WebSocket", "XMLHttpRequest", "fetch", "socket", "request", "response",
+    "proxy", "hook", "telnet", "rdp", "vnc", "WebSocket", "XMLHttpRequest",
+    "fetch", "socket", "request", "response", "http://", "https://",
+    "ftp://", "ws://", "wss://", "SMTP", "SMTPClient", "smtp_send", "SOAP",
+    "SOAPClient", "SOAPServer", "TCPClient", "TCPListener", "IMAP", "POP3",
 
     # Web and Scripting Vulnerabilities
     "onload", "onclick", "onerror", "onsubmit", "onmouseover", "iframe", "embed",
@@ -215,21 +240,53 @@ default_interesting_strings = [
     "alert", "prompt", "confirm", "content-security-policy", "x-frame-options", 
     "x-xss-protection", "x-content-type-options", "strict-transport-security", 
     "referrer-policy", "permissions-policy", "dangerouslySetInnerHTML",
+    "innerHTML", "document.cookie", "DOMDocument", "htmlentities", "htmlspecialchars",
+    "window.location", "(with /e modifier)", "iframe", "embed", "script",
 
     # Network Configuration and Libraries
-    "dns", "net", "tls", "http", "https", "url", "cluster", "dgram", "stream", "zlib",
-    "querystring",
+    "dns", "net", "tls", "http", "https", "url", "cluster", "dgram", "stream",
+    "zlib", "querystring", "libcurl", "fetch", "axios", "jQuery.ajax",
 
     # Timing and Race Conditions
     "race", "thread", "mutex", "semaphore", "deadlock", "lock", "unlock",
     "time", "gettimeofday", "clock", "sleep", "setTimeout", "setInterval",
+    "pthread", "mutex",
 
     # File Inclusion/Path Traversal
-    "require(", "import", "export", "module.exports", "__dirname", "__filename", 
-    "path", "resolve", "basename", "dirname", "relative",
+    "../", "..\\", "``", "%2e%2e%2f", "absolute path", "/admin/", "/api/",
+    "/backup/", "/debug/", "/test/", "require(", "import", "export",
+    "module.exports", "__dirname", "__filename", "path", "resolve", "basename",
+    "dirname", "relative", "relative path", "path traversal",
 
     # Environment Variables and Sensitive Data Exposure
-    "process.env", "Buffer", "JSON.parse", "JSON.stringify", "env", "dotenv", "config",
+    "process.env", "Buffer", "JSON.parse", "JSON.stringify", "env", "dotenv",
+    "config", ".env", "os.environ", "os.system",
+
+    # e.g. PHP related
+    "_GET", "_POST", "_PUT", "$_COOKIE", "$_ENV", "$_FILES", "$_GET", "$_POST",
+    "$_REQUEST", "config.php", "database.yml", "secrets.yml", "PHP:", "PHPMailer",
+    "cPickle", "preg_match", "preg_replace",
+
+    # Programming Functions / API
+    "addslashes", "assert", "Assembly.Load", "Assembly.LoadFrom", "bind",
+    "Class.forName", "create_function", "Function()", "new Function", "lambda",
+    "marshal", "Method.invoke", "ObjectInputStream", "ObjectOutputStream",
+    "print", "print_r", "printStackTrace", "require_once", "split", "sprintf",
+    "strcat", "strcpy", "strip_tags", "strncpy", "toString", "Type.GetType",
+
+    # Database
+    "commit", "connect", "database.yml", "db.query", "executeQuery",
+    "INSERT", "INTO OUTFILE", "JOIN", "mysqli_query", "mysql_real_escape_string",
+    "pg_query", "preparedStatement", "query", "sql_query", "SELECT",
+    "UPDATE", "UNION", "WHERE", "parameterized queries",
+
+    # Miscellaneous
+    "audit", "axios", "(backticks)", "(int)", "//FIXME", "FIXME", "//TODO",
+    "TODO", "NOTE", "from", "FROM", "int", "string", "ProcessBuilder",
+    "Process.Start", "readFile", "readObject", "read", "require",
+    "require_once", "render", "replace", "redirect", "Referer", "role",
+    "synchronize", "validate", "var_dump", "verify=False", "use after free",
+    "User-Agent", "using", "wait", "with /e modifier"
 ]
 
 # Global dictionaries to store findings grouped by type
